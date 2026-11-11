@@ -1,0 +1,1420 @@
+---
+title: "PROJECT 1- DIABETES"
+author: "Daniela Bialy & Elena Lardies"
+date: "2025-11-09"
+output:
+  html_document: 
+    css: my-theme.css
+    theme: cerulean
+    highlight: tango
+    number_sections: no
+    toc: no
+    toc_depth: 1
+---
+
+
+```{r global_options, include=T, echo = F}
+knitr::opts_chunk$set(echo = T, warning=FALSE, message=FALSE)
+```
+
+This report presents a comprehensive analysis of the diabetes dataset. The workflow begins with data loading, inspection, and careful preprocessing to address missing values, outliers, and variable transformations. Exploratory data analysis includes visualizations and summary statistics to reveal meaningful patterns related to diabetes risk factors. We engineer new features and examine correlations to identify the most relevant predictors. Multiple statistical techniques are then applied: regression modeling, principal component analysis (PCA), factor analysis, and various clustering algorithms (k-means, PAM, hierarchical, EM, and kernel k-means). Throughout, visualizations and interpretations help clarify group structures and risk profiles. The organization of this report aims to provide both technical rigor and practical insights into diabetes risk based on clinical and demographic variables.
+
+# Load and prepare data
+```{r}
+rm(list=ls())
+dev.off()
+
+setwd("C:/Users/danie/OneDrive/Escritorio/data science 2/aprendizaje estadistico")
+list.files()
+
+readLines( "diabetes.csv", 3)
+data=read.csv("diabetes.csv", header= TRUE, sep=",", dec=".")
+library(tidyverse) 
+library(tidyr) 
+library(dplyr) 
+library(leaflet) 
+library(mapboxapi) 
+library(sf) 
+library(readxl)
+library(stringr) 
+library(ggplot2) 
+library(reshape2) 
+library(igraph) 
+library(caret) 
+library(countrycode) 
+library(rworldmap) 
+library(GGally) 
+library(factoextra) 
+library(cluster) 
+library(mclust) 
+library(kernlab)
+library(e1071)
+```
+
+
+# 1. DATA PREPROCESSING & 2.VISUALIZATION TOOLS
+
+```{r}
+#Change the name of DiabetesPedigreeFunction variable to DPF to simplify
+data$DPF = data$DiabetesPedigreeFunction
+data$DiabetesPedigreeFunction = NULL
+
+##NA & MISSING VALUES
+table(is.na(data)) #No NA values
+table(data=="") #No missing values
+sapply(data[, c("Glucose","BloodPressure","SkinThickness","Insulin","BMI")], 
+       function(x) sum(x == 0)) 
+#Many 0 values that mean missing values because that variables can't take the value 0
+
+#We replaced the 0 values with NA. 
+cols_to_na <- c("Glucose","BloodPressure","SkinThickness","Insulin","BMI")
+data[cols_to_na] <- lapply(data[cols_to_na], function(x) replace(x, x == 0, NA))
+
+#We visualice the porcentage of NA in each variable
+missing_summary = data %>% 
+  summarise(across(everything(), ~ mean(is.na(.)) * 100)) %>% 
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "PercentageNA") 
+
+print(missing_summary) 
+ggplot(missing_summary, aes(x = reorder(Variable, -PercentageNA), y = PercentageNA)) + 
+  geom_bar(stat = "identity", fill = "pink") + 
+  labs(title = "Percentage of Missing values", 
+       x = "Variable", 
+       y = "% NA") + 
+  theme_minimal()
+```
+
+Before handling the missing values, let's check the skeweness of the numeric 
+variables with NA. A variable is considered skewed when its distribution is not 
+symmetric(the values are concentrated more on one side, resulting in a longer 
+tail on either the left or right).
+
+
+
+
+```{r}
+skewness_Glucose = skewness(data$Glucose, na.rm = TRUE) 
+print(skewness_Glucose)
+hist(data$Glucose, main = "Histogram of Glucose", xlab = "Value", col = "skyblue", breaks = 30) 
+
+skewness_Insulin = skewness(data$Insulin, na.rm = TRUE) 
+print(skewness_Insulin)
+hist(data$Insulin, main = "Histogram of Insulin", xlab = "Value", col = "skyblue", breaks = 30) 
+
+skewness_SkinThickness = skewness(data$SkinThickness, na.rm = TRUE) 
+print(skewness_SkinThickness)
+hist(data$SkinThickness, main = "Histogram of SkinThickness", xlab = "Value", col = "skyblue", breaks = 30) 
+
+skewness_BloodPressure = skewness(data$BloodPressure, na.rm = TRUE) 
+print(skewness_BloodPressure)
+hist(data$BloodPressure, main = "Histogram of BloodPressure", xlab = "Value", col = "skyblue", breaks = 30) 
+
+skewness_BMI = skewness(data$BMI, na.rm = TRUE) 
+print(skewness_BMI)
+hist(data$BMI, main = "Histogram of BMI", xlab = "Value", col = "skyblue", breaks = 30) 
+
+```
+
+We see that for the variables "SkinThickness","Insulin" and "BMI" the value is more than 0,5, 
+so we can consither they are skewed to the right. To deal with it we use knn.
+
+```{r}
+#Select numeric variables skewed to the right
+df_skewed = data[, c("SkinThickness","Insulin","BMI")] 
+# Impute missing values using knn on skewed variables
+library(VIM)
+df_skewed_imputed = kNN(df_skewed, k = 5) 
+summary(df_skewed_imputed) 
+
+#Check if there are any NA
+missing_values_imputed = sapply(df_skewed_imputed, function(x) sum(is.na(x))) 
+print(missing_values_imputed)
+
+#Change the original variables for the ones without NA that we had computed using knn  
+data$Insulin = df_skewed_imputed$Insulin
+data$BMI = df_skewed_imputed$BMI
+data$SkinThickness = df_skewed_imputed$SkinThickness
+
+```
+
+For the ones that aren't skewed(BloodPressure, Glucose), we replace the missing 
+values with the mean of the rest of values
+
+```{r}
+data = na.omit(data) 
+BloodPressure_mean = mean(data$BloodPressure) 
+data$BloodPressure[is.na(data$BloodPressure)] = BloodPressure_mean
+Glucose_mean = mean(data$Glucose) 
+data$Glucose[is.na(data$Glucose)] = Glucose_mean
+```
+
+
+FEATURE ENGENEERING: We created a new binary variable HighRisk, defined as 1 when Glucose > 140 and 
+BMI > 30, and 0 otherwise, to capture the joint effect of obesity and high glucose levels.
+
+```{r}
+data$HighRisk = ifelse(data$Glucose > 140 & data$BMI > 30, 1, 0)
+table(data$HighRisk)
+
+
+
+tapply(data$Outcome, data$HighRisk, mean, na.rm = TRUE)
+#Individuals classified as high-risk are roughly three times more likely to have diabetes.
+
+
+#Factorize categorical variables
+data$Outcome = as.factor(data$Outcome) 
+data$Outcome = factor(data$Outcome, levels = c(0, 1), 
+                      labels = c("No", "Yes"))
+
+
+data$HighRisk <- factor(data$HighRisk, levels=c(0,1), labels=c("Low Risk", "High Risk"))
+
+
+```
+
+
+
+CORRELATION:Visualize the correlation of variables. We use only the numeric variables to compute the correlation matrix
+```{r}
+vars_for_coer = data %>% 
+  dplyr::select(Pregnancies, Glucose, BloodPressure, BMI, Age, DPF, Insulin, SkinThickness)
+
+cor_matrix = ggcorr(vars_for_coer, label = TRUE, hjust = 0.75,
+                    label_size = 4, label_color = "black",
+                    low = "turquoise", high = "coral2", mid = "white",
+                    midpoint = 0, name = "Correlation") +
+  labs(title = "Correlation Matrix")
+
+print(cor_matrix)
+
+#If their relationship is close to 1, those two variables have a very strong positive relationship.
+#If close to -1 then a strong negative relationship. If close to 0 not correlated.
+
+```
+
+OUTLIERS
+
+```{r}
+cont_vars = data[, c("BMI", "DPF")]
+#Visualize outliers with using boxplots
+boxplot(cont_vars, 
+        las=2, 
+        col="grey",
+        main = "Outliers of Continuous Variables",
+        outcol = "red")
+
+df_BMI = data$BMI
+hist(df_BMI,
+     main = "Histogram of BMI",
+     xlab = "Data Values",
+     ylab = "Frequency",
+     col = "lightpink",
+     border = "black")
+
+df_DPF = data$DPF
+hist(df_DPF,
+     main = "Histogram of DPF",
+     xlab = "Data Values",
+     ylab = "Frequency",
+     col = "lightblue",
+     border = "black")
+
+```
+
+
+BMI is more or less normally distributed (slightly skewed to the right), however
+DPF is clearly skewed to the right (the distribution is not normal).
+Therefore, the IQR rule is the better choice for identifying outliers in this 
+dataset, against the Sigma rule which may not work well with skewed data, as it 
+assumes symmetry around the mean.
+
+```{r}
+#Method: IQR
+outliers= numeric(ncol(cont_vars))
+# Loop through each variable to to calculate IQR and identify the outliers
+for (i in 1:length(cont_vars)) {
+  # Calculate Q1 and Q3
+  QI = quantile(cont_vars[[i]], 0.25, na.rm = TRUE) #1st quantile
+  QS = quantile(cont_vars[[i]], 0.75, na.rm = TRUE) #3rd quantile
+  IQR = QS - QI #Interquartile range (IQR)
+  # Count outliers
+  outliers[i] = sum(cont_vars[[i]] < (QI - 1.5 * IQR) | cont_vars[[i]] >
+                               (QS + 1.5 * IQR), na.rm = TRUE)
+}
+# Print the number of outliers identified for each variable
+names(outliers) = names(cont_vars)
+print(outliers)
+
+#REMOVE OUTLIERS
+#clean_data will be our data without outliers.
+clean_data = data
+#Remove outliers based on IQR method. Do this with all the variables that have outliers
+clean_data = data %>%
+  filter(BMI <= quantile(BMI, 0.75) + 1.5 * IQR(BMI) &
+      BMI>= quantile(BMI, 0.25) - 1.5 * IQR(BMI) &
+      DPF <= quantile(DPF, 0.75) + 1.5 * IQR(DPF) &
+        DPF>= quantile(DPF, 0.25) - 1.5 * IQR(DPF)
+  )
+
+```
+
+Creation of some plots to visualize the data 
+```{r}
+# Visualize distributions of numeric variables only
+numeric_vars <- c("Pregnancies","Glucose","BloodPressure","SkinThickness",
+                  "Insulin","BMI","Age","DPF")
+
+clean_data %>%
+  gather(variable, value, numeric_vars) %>%       # only numeric variables
+  ggplot(aes(x = as.numeric(value))) +
+  facet_wrap(~variable, scales = "free") +
+  geom_histogram(bins = 30, fill="lightblue", color="black") +
+  theme_minimal() +
+  labs(title = "Variable Distributions in Diabetes Dataset")
+
+# Scatter plot: Age vs BMI colored by Outcome
+ggplot(clean_data, aes(x = Age, y = BMI, color = Outcome)) +
+  geom_point(alpha = 0.6) +
+  theme_minimal() +
+  labs(title = "Age vs BMI, colored by Diabetes Outcome")
+
+# Boxplot of numeric variable Glucose by Outcome
+ggplot(clean_data, aes(x = Outcome, y = Glucose, fill = Outcome)) +
+  geom_boxplot() +
+  labs(title = "Glucose Levels by Diabetes Outcome", x = "Outcome", y = "Glucose") +
+  theme_minimal()
+
+# Boxplot of numeric variable BMI by Outcome
+ggplot(clean_data, aes(x = Outcome, y = BMI, fill = Outcome)) +
+  geom_boxplot() +
+  labs(title = "BMI by Diabetes Outcome", x = "Outcome", y = "BMI") +
+  theme_minimal()
+
+# Barplot: Proportion of Diabetes by BMI category
+clean_data$BMI_cat <- cut(clean_data$BMI, breaks = c(0, 18.5, 25, 30, 100), 
+                          labels = c("Underweight", "Normal", "Overweight", "Obese"))
+ggplot(clean_data, aes(x = BMI_cat, fill = Outcome)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Diabetes by BMI Category", x = "BMI Category", y = "Proportion") +
+  theme_minimal()
+
+# Boxplot Age by HighRisk category
+ggplot(clean_data, aes(x = HighRisk, y = Age, fill = HighRisk)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Age Distribution by Risk Group", x = "Risk Group", y = "Age")
+
+# Boxplot Insulin by HighRisk category
+ggplot(clean_data, aes(x = HighRisk, y = Insulin, fill = HighRisk)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Insulin Levels by Risk Group", x = "Risk Group", y = "Insulin")
+
+# Barplot: Outcome counts by HighRisk
+clean_data %>%
+  group_by(HighRisk, Outcome) %>%
+  tally() %>%
+  ggplot(aes(x = HighRisk, y = n, fill = Outcome)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Diabetes Outcome by Risk Group", x = "Risk Group", fill = "Outcome") +
+  theme_minimal()
+```
+
+
+The plots show clear relationships between diabetes risk factors and outcomes. Individuals with higher BMI and older age are more likely to have diabetes, as seen in the scatter and boxplots. The barplot of risk groups demonstrates that those classified as "High Risk"—based on elevated glucose and BMI—have a much greater proportion of positive diabetes outcomes. Additionally, boxplots reveal that people in the high-risk group tend to have higher insulin levels and are generally older. The proportional bar charts further indicate a strong association between obesity and diabetes prevalence, reinforcing the impact of body mass on diabetes risk. 
+
+# 3. REGRESSION & RESAMPLING
+
+The variable we want to study is Outcome. Since it is categorical, we cannot use linear regression with it. Instead, we performed linear regression between SkinThickness and BMI as an example.
+
+```{r}
+#As we saw in the correlation matrix, Skinthickness and BMI are highly correlated,
+#that is why we will use it for linear regression.
+##LINEAR REGRESSION AND MSE
+set.seed(123)
+n = nrow(clean_data)
+n.train = floor(0.8*n)
+ind.train = sample(1:n, n.train, replace = FALSE)
+train = clean_data[ind.train, ]
+test  = clean_data[-ind.train, ]
+
+fit_1 = lm(SkinThickness ~ 1, data = train)
+fit_2 = lm(SkinThickness ~ poly(BMI, 1), data = train)
+fit_3 = lm(SkinThickness ~ poly(BMI, 2), data = train)
+fit_4 = lm(SkinThickness ~ poly(BMI, 9), data = train)
+
+pred.test.1 = predict(fit_1, newdata=test)
+pred.test.2 = predict(fit_2, newdata=test)
+pred.test.3 = predict(fit_3, newdata=test)
+pred.test.4 = predict(fit_4, newdata=test)
+
+MSE.test.1 = mean((pred.test.1 - test$BMI)^2)
+MSE.test.2 = mean((pred.test.2 - test$BMI)^2)
+MSE.test.3 = mean((pred.test.3 - test$BMI)^2)
+MSE.test.4 = mean((pred.test.4 - test$BMI)^2)
+
+plot(SkinThickness ~ BMI, data = train,
+     main = "Polynomial Regression Fits",
+     xlab = "BMI", ylab = "SkinThickness",
+     pch = 19, col = "gray70")
+
+grid = seq(min(train$BMI), max(train$BMI), length = 200)
+
+lines(grid, predict(fit_1, newdata = data.frame(BMI = grid)), col = "red", lwd = 2, lty = 2)
+lines(grid, predict(fit_2, newdata = data.frame(BMI = grid)), col = "blue", lwd = 2, lty = 3)
+lines(grid, predict(fit_3, newdata = data.frame(BMI = grid)), col = "green", lwd = 2, lty = 4)
+lines(grid, predict(fit_4, newdata = data.frame(BMI = grid)), col = "orange", lwd = 2, lty = 5)
+
+legend("topleft",
+       legend = c("y ~ 1", "poly(1)", "poly(2)", "poly(9)"),
+       col = c("red", "blue", "green", "orange"),
+       lty = c(2, 3, 4, 5),
+       lwd = 2,
+       cex = 0.9)
+
+
+
+
+## RESAMPLING: K-FOLD CROSS-VALIDATION
+library(boot)
+
+forms = list(
+  as.formula("SkinThickness ~ 1"),
+  as.formula("SkinThickness ~ poly(BMI, 1)"),
+  as.formula("SkinThickness ~ poly(BMI, 2)"),
+  as.formula("SkinThickness ~ poly(BMI, 9)")
+)
+
+K = 10
+cv_MSE = sapply(forms, function(f) {
+  mod = glm(f, data = clean_data)          # linear model (gaussian)
+  cv.glm(clean_data, mod, K = K)$delta[1]  # 10-fold CV MSE
+})
+
+names(cv_MSE) = c("y ~ 1", "poly(1)", "poly(2)", "poly(9)")
+cv_MSE
+
+
+
+```
+
+The graph shows the fit of several polynomial regression models between SkinThickness (y-axis) and BMI (x-axis). There is a moderate positive trend: higher BMI tends to correspond to higher skin thickness on average. The simple linear model (poly(1), blue) captures this upward trend and is sufficient given the noise in the data. The quadratic model (poly(2), green) only slightly improves the fit and follows some curvature, while the high-degree model (poly(9), orange) behaves similarly but adds unnecessary complexity, particularly at the edges. The constant model (y~1, red) simply estimates the mean of SkinThickness and is clearly inadequate. 
+
+
+To study the outcome variable, we performed logistic regression for each variable against the outcome.
+
+For Glucose:
+
+```{r}
+#1. Logistic regression (classification)
+# Setup the data splits
+set.seed(123)
+n = nrow(clean_data)
+n.train = floor(0.8 * n)
+ind.train = sample(1:n, n.train, replace = FALSE)
+train = clean_data[ind.train, ]
+test = clean_data[-ind.train, ]
+
+
+# Logistic regression using Glucose as predictor
+fit_logit <- glm(Outcome ~ Glucose, data = train, family = "binomial")
+
+#Prediction of probabilities and classes﻿
+prob.test <- predict(fit_logit, newdata = test, type = "response")
+pred.class <- ifelse(prob.test > 0.7, "Yes", "No")
+pred.class <- factor(pred.class, levels = c("No", "Yes"))
+
+#Classification metrics on the test set
+library(caret)
+confusionMatrix(pred.class, test$Outcome)
+
+#ROC/AUC
+library(pROC)
+rocobj <- roc(test$Outcome, prob.test, levels = c("No","Yes"))
+plot(rocobj)
+
+auc(rocobj)
+
+
+
+
+#2. Resampling (crossvalidation, K-fold)
+library(caret)
+ctrl <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+fit_cv <- train(
+  Outcome ~ Glucose,
+  data = clean_data,
+  method = "glm",
+  family = "binomial",
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+print(fit_cv)
+
+
+
+```
+
+
+For Insulin:
+
+```{r}
+#1. Logistic regression (classification)
+
+# Setup de data splits
+set.seed(123)
+n = nrow(clean_data)
+n.train = floor(0.8 * n)
+ind.train = sample(1:n, n.train, replace = FALSE)
+train = clean_data[ind.train, ]
+test = clean_data[-ind.train, ]
+
+
+# Logistic regression using Insulin as predictor
+fit_logit <- glm(Outcome ~ Insulin, data = train, family = "binomial")
+
+#Prediction of probabilities and classes﻿
+prob.test <- predict(fit_logit, newdata = test, type = "response")
+pred.class <- ifelse(prob.test > 0.7, "Yes", "No")
+pred.class <- factor(pred.class, levels = c("No", "Yes"))
+
+#Classification metrics on the test set
+library(caret)
+confusionMatrix(pred.class, test$Outcome)
+
+# ROC/AUC
+library(pROC)
+rocobj <- roc(test$Outcome, prob.test, levels = c("No","Yes"))
+plot(rocobj)
+
+auc(rocobj)
+
+
+
+
+#2. Resampling (crossvalidation, K-fold)
+library(caret)
+ctrl <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+fit_cv <- train(
+  Outcome ~ Insulin,
+  data = clean_data,
+  method = "glm",
+  family = "binomial",
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+print(fit_cv)
+
+```
+
+For BMI:
+
+```{r}
+#1. Logistic regression (classification)
+
+# Setup de data splits
+set.seed(123)
+n = nrow(clean_data)
+n.train = floor(0.8 * n)
+ind.train = sample(1:n, n.train, replace = FALSE)
+train = clean_data[ind.train, ]
+test = clean_data[-ind.train, ]
+
+
+# Logistic regression using BMI as predictor
+fit_logit <- glm(Outcome ~ BMI, data = train, family = "binomial")
+
+#Prediction of probabilities and classes﻿
+prob.test <- predict(fit_logit, newdata = test, type = "response")
+pred.class <- ifelse(prob.test > 0.7, "Yes", "No")
+pred.class <- factor(pred.class, levels = c("No", "Yes"))
+
+#Classification metrics on the test set
+library(caret)
+confusionMatrix(pred.class, test$Outcome)
+
+#ROC/AUC
+library(pROC)
+rocobj <- roc(test$Outcome, prob.test, levels = c("No","Yes"))
+plot(rocobj)
+
+auc(rocobj)
+
+
+
+
+#2. Resampling (crossvalidation, K-fold)
+library(caret)
+ctrl <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+fit_cv <- train(
+  Outcome ~ BMI,
+  data = clean_data,
+  method = "glm",
+  family = "binomial",
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+print(fit_cv)
+```
+
+For SkinThickness:
+```{r}
+#1. Logistic regression (classification)
+
+# Setup de data splits
+set.seed(123)
+n = nrow(clean_data)
+n.train = floor(0.8 * n)
+ind.train = sample(1:n, n.train, replace = FALSE)
+train = clean_data[ind.train, ]
+test = clean_data[-ind.train, ]
+
+
+# Logistic regression using SkinThickness as predictor
+fit_logit <- glm(Outcome ~ SkinThickness, data = train, family = "binomial")
+
+#Prediction of probabilities and classes﻿
+prob.test <- predict(fit_logit, newdata = test, type = "response")
+pred.class <- ifelse(prob.test > 0.7, "Yes", "No")
+pred.class <- factor(pred.class, levels = c("No", "Yes"))
+
+#Classification metrics on the test set
+library(caret)
+confusionMatrix(pred.class, test$Outcome)
+
+#ROC/AUC
+library(pROC)
+rocobj <- roc(test$Outcome, prob.test, levels = c("No","Yes"))
+plot(rocobj)
+
+auc(rocobj)
+
+
+
+
+#2. Resampling (Crossvalidation, K-fold)
+library(caret)
+ctrl <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+fit_cv <- train(
+  Outcome ~ SkinThickness,
+  data = clean_data,
+  method = "glm",
+  family = "binomial",
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+print(fit_cv)
+
+
+```
+
+For Pregnancies:
+
+```{r}
+#1. Logistic regression (classification)
+
+# Setup de data splits
+set.seed(123)
+n = nrow(clean_data)
+n.train = floor(0.8 * n)
+ind.train = sample(1:n, n.train, replace = FALSE)
+train = clean_data[ind.train, ]
+test = clean_data[-ind.train, ]
+
+
+# Logistic regression using Pregnancies as predictor
+fit_logit <- glm(Outcome ~ Pregnancies, data = train, family = "binomial")
+
+#Prediction of probabilities and classes﻿
+prob.test <- predict(fit_logit, newdata = test, type = "response")
+pred.class <- ifelse(prob.test > 0.7, "Yes", "No")
+pred.class <- factor(pred.class, levels = c("No", "Yes"))
+
+#Classification metrics on the test set
+library(caret)
+confusionMatrix(pred.class, test$Outcome)
+
+#ROC/AUC
+library(pROC)
+rocobj <- roc(test$Outcome, prob.test, levels = c("No","Yes"))
+plot(rocobj)
+
+auc(rocobj)
+
+
+
+
+#2. Resampling (Crossvalidation, K-fold)
+library(caret)
+ctrl <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+fit_cv <- train(
+  Outcome ~ Pregnancies,
+  data = clean_data,
+  method = "glm",
+  family = "binomial",
+  trControl = ctrl,
+  metric = "ROC"
+)
+print(fit_cv)
+
+```
+
+For BloodPressure:
+
+```{r}
+#1. Logistic regression (classification)
+
+# Setup de data splits
+set.seed(123)
+n = nrow(clean_data)
+n.train = floor(0.8 * n)
+ind.train = sample(1:n, n.train, replace = FALSE)
+train = clean_data[ind.train, ]
+test = clean_data[-ind.train, ]
+
+
+# Logistic regression using BloodPressure as predictor
+fit_logit <- glm(Outcome ~ BloodPressure, data = train, family = "binomial")
+
+#Prediction of probabilities and classes﻿
+prob.test <- predict(fit_logit, newdata = test, type = "response")
+pred.class <- ifelse(prob.test > 0.7, "Yes", "No")
+pred.class <- factor(pred.class, levels = c("No", "Yes"))
+
+#Classification metrics on the test set
+library(caret)
+confusionMatrix(pred.class, test$Outcome)
+
+#ROC/AUC
+library(pROC)
+rocobj <- roc(test$Outcome, prob.test, levels = c("No","Yes"))
+plot(rocobj)
+
+auc(rocobj)
+
+
+
+
+#2. Resampling (Crossvalidation, K-fold)
+library(caret)
+ctrl <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+fit_cv <- train(
+  Outcome ~ BloodPressure,
+  data = clean_data,
+  method = "glm",
+  family = "binomial",
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+print(fit_cv)
+
+```
+
+For Age:
+
+```{r}
+#1. Logistic regression (classification)
+
+# Setup de data splits
+set.seed(123)
+n = nrow(clean_data)
+n.train = floor(0.8 * n)
+ind.train = sample(1:n, n.train, replace = FALSE)
+train = clean_data[ind.train, ]
+test = clean_data[-ind.train, ]
+
+
+# Logistic regression using Age as predictor
+fit_logit <- glm(Outcome ~ Age, data = train, family = "binomial")
+
+#Prediction of probabilities and classes﻿
+prob.test <- predict(fit_logit, newdata = test, type = "response")
+pred.class <- ifelse(prob.test > 0.7, "Yes", "No")
+pred.class <- factor(pred.class, levels = c("No", "Yes"))
+
+#Classification metrics on the test set
+library(caret)
+confusionMatrix(pred.class, test$Outcome)
+
+#ROC/AUC
+library(pROC)
+rocobj <- roc(test$Outcome, prob.test, levels = c("No","Yes"))
+plot(rocobj)
+
+auc(rocobj)
+
+
+
+
+#2. Resampling (Crossvalidation, K-fold)
+library(caret)
+ctrl <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+fit_cv <- train(
+  Outcome ~ Age,
+  data = clean_data,
+  method = "glm",
+  family = "binomial",
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+print(fit_cv)
+
+
+
+
+```
+
+For DPF:
+
+```{r}
+#1. Logistic regression (classification)
+
+# Setup de data splits
+set.seed(123)
+n = nrow(clean_data)
+n.train = floor(0.8 * n)
+ind.train = sample(1:n, n.train, replace = FALSE)
+train = clean_data[ind.train, ]
+test = clean_data[-ind.train, ]
+
+
+# Logistic regression using DPF as predictor
+fit_logit <- glm(Outcome ~ DPF, data = train, family = "binomial")
+
+#Prediction of probabilities and classes﻿
+prob.test <- predict(fit_logit, newdata = test, type = "response")
+pred.class <- ifelse(prob.test > 0.7, "Yes", "No")
+pred.class <- factor(pred.class, levels = c("No", "Yes"))
+
+#Classification metrics on the test set
+library(caret)
+confusionMatrix(pred.class, test$Outcome)
+
+#ROC/AUC
+library(pROC)
+rocobj <- roc(test$Outcome, prob.test, levels = c("No","Yes"))
+plot(rocobj)
+
+auc(rocobj)
+
+
+
+
+#2. Resampling (Crossvalidation, K-fold)
+library(caret)
+ctrl <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+fit_cv <- train(
+  Outcome ~ DPF,
+  data = clean_data,
+  method = "glm",
+  family = "binomial",
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+print(fit_cv)
+
+
+```
+
+
+
+# 4. PCA
+```{r}
+#Predictors for PCA (exclude categorical variables)
+pca_vars = clean_data %>% 
+  dplyr::select(Pregnancies, Glucose, BloodPressure, BMI, Age, DPF, Insulin, SkinThickness)
+
+# scaling
+pca = prcomp(pca_vars, center = TRUE, scale. = TRUE)
+summary(pca)
+sort(abs(pca$rotation[, 1]), decreasing = TRUE)
+sort(abs(pca$rotation[, 2]), decreasing = TRUE)
+
+
+# Screeplot
+fviz_screeplot(pca, addlabels = TRUE)
+
+#Component visualization
+barplot(pca$rotation[, 1], las = 2, col = "lightgreen", main = "PC1 loadings")
+barplot(pca$rotation[, 2], las = 2, col = "orange", main = "PC2 loadings")
+
+
+# Contribution of variables to the first component
+fviz_contrib(pca, choice = "var", axes = 1, fill = "skyblue")
+# Contribution of variables to the second component
+fviz_contrib(pca, choice = "var", axes = 2)
+
+
+# Manual contribution calculation of 1 (matches the plot)
+pca_result = prcomp(pca_vars, scale. = TRUE)
+loadings = pca_result$rotation[, 2]               # loadings of PC1
+contributions = loadings^2                         # squared loadings
+percent_contributions = (contributions / sum(contributions)) * 100
+percent_contributions
+
+# Biplot of cleaned data:
+biplot(pca)
+
+# More visual information using contributions
+fviz_pca_var(pca, col.var = "contrib")
+fviz_pca_biplot(pca, repel = TRUE)
+
+
+# Points (observations) in PC space, colored by Outcome
+data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2],
+           Target_Variable = factor(clean_data$Outcome)) %>%
+  ggplot(aes(x = PC1, y = PC2, color = Target_Variable)) +
+  geom_point(size = 3, alpha = 0.6) +
+  labs(title = "Diabetes in PCA space",
+       x = "PC1", y = "PC2") +
+  theme_minimal()
+
+# As an extra, we computed the proportion of variance explained by each PC
+pca_variance = summary(pca)$importance[2, ]
+pca_variance  # proportion of variance for each PCA
+
+# Cumulative variance plot
+cumulative_variance = cumsum(pca_variance)
+cumulative_data = data.frame(
+  PC = 1:length(cumulative_variance),
+  Cumulative_Variance = cumulative_variance
+)
+
+ggplot(cumulative_data, aes(x = PC, y = Cumulative_Variance)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Cumulative Variance Explained by PCs",
+       x = "Principal Component", y = "Cumulative Proportion of Variance") +
+  theme_minimal() +
+  ylim(0, 1)
+
+# Selecting the number of components (e.g., >= 70% variance)
+n_components = min(which(cumulative_variance >= 0.70))
+cat("Number of components selected (clean, scaled):", n_components, "\n")
+
+```
+
+
+
+# 5. Factor analysis
+```{r}
+X = clean_data %>% 
+  dplyr::select(Pregnancies, Glucose, BloodPressure, BMI, Age, DPF, Insulin, SkinThickness)
+
+x.f = factanal(X, factors = 3, rotation = "none") 
+x.f
+#Display the summary of the factor analysis
+results=cbind(x.f$loadings, x.f$uniquenesses)
+
+#Name the columns for clarity 
+colnames(results) = c("Factor1", "Factor2", "Factor3", "Uniquenesses") 
+print(results)
+
+#interpretation
+par(mfrow=c(3,1))
+barplot(x.f$loadings[,1], las=2, col="darkblue", ylim = c(-1, 1))
+barplot(x.f$loadings[,2], las=2, col="darkblue", ylim = c(-1, 1))
+barplot(x.f$loadings[,3], las=2, col="darkblue", ylim = c(-1, 1))
+
+
+#Now estimate the model with only two factors, rotation `varimax` (sparser 
+#representation), and `Barlett` estimation for scores (WLS) 
+x.f2 <- factanal(X, 2, scores="Bartlett", rotation="varimax")
+x.f2
+
+results2=cbind(x.f2$loadings, x.f2$uniquenesses)
+
+
+colnames(results2) = c("factor1", "factor2", "uniquenesses") 
+print(results2) 
+
+par(mfrow=c(2,1))
+barplot(x.f2$loadings[,1], las=2, col="darkblue", ylim = c(-1, 1))
+barplot(x.f2$loadings[,2], las=2, col="darkblue", ylim = c(-1, 1))
+
+```
+
+```{r}
+
+```
+
+#  6.Clustering 
+Group the observations by their distances to the mean of the group. Use the 
+function `kmeans`. Our initial guess for the number of clusters is  k = 4
+```{r}
+k = 4 
+fit = kmeans(scale(X), k, nstart=1000) 
+groups = fit$cluster
+barplot(table(groups), col="darkblue")
+#unbalanced classification
+
+#Interpretation of centers:
+centers=fit$centers
+tidy = cbind(
+  gather(as.data.frame(t(centers)), "cluster", "coor"),
+  var=rep(colnames(centers, k)),
+  size=rep(table(fit$cluster), each=ncol(centers))
+)
+
+
+tidy %>%
+  ggplot(aes(x=cluster, y=coor, fill=cluster)) +
+  geom_col() +
+  facet_wrap(~var) +
+  geom_text(aes(label=size),
+            position=position_stack(1.2))
+
+centers=fit$centers
+tidy = cbind(
+  gather(as.data.frame(t(centers)), "cluster", "coor"),
+  var=rep(colnames(centers, k)),
+  size=rep(table(fit$cluster), each=ncol(centers))
+)
+
+tidy %>%
+  ggplot(aes(x=var, y=coor, fill=var)) +
+  geom_col() +
+  facet_wrap(~cluster) +
+  theme(axis.text.x = element_text(angle=45))
+
+#clusplot
+#We can take a look to the groups using the `fviz_cluster` function. 
+#This function uses PCA to project the data in a 2D space for plotting.
+# Use fviz_cluster to visualize the groups
+
+names = rownames(X) 
+fviz_cluster(fit, data=X, geom=c("point"), 
+             ellipse.type = "norm") + 
+  theme_minimal() + geom_text(label=names)
+
+
+fviz_cluster(fit, data = X, geom = "point", ellipse.type = "norm", 
+             show.clust.cent = TRUE, #Show only the cluster centers 
+             repel = TRUE,           #Repel text labels to see better the plot 
+             pointsize = 1,           
+             alpha = 0.5) +           
+  theme_minimal() + 
+  labs(title = "Improved Cluster Plot") + 
+  theme(legend.position = "bottom") 
+
+#This plot shows considerable overlap between clusters, suggesting that the 
+#clinical profiles are not completely distinct but some subgroup structure still 
+#exists among the patients
+
+new_pca = prcomp(X, scale=T) 
+barplot(new_pca$rotation[,1], las=2, col="darkblue") 
+fit.kmeans = eclust(scale(X), "kmeans", k=4, stand=TRUE, nstart=100) 
+
+
+```
+
+SILOHUETTE:
+The silhouette value in [-1,1] measures the similarity (cohesion) of a data 
+point to its cluster relative to other clusters (separation). The larger the 
+silhouette widths, the better. By averaging all the Silhoutte values we could 
+assign a value to the structure as a whole.
+
+
+
+```{r}
+d = dist(scale(X), method="euclidean") 
+sil = silhouette(groups, d) 
+plot(sil, col=1:5, main="", border=NA) 
+summary(sil) 
+
+#Closer to 1 indicate that points are well-clustered and clearly separated from other clusters. 
+#Closer to 0 suggest overlapping clusters or points that aren't well-separated.
+
+# the same with factoextra 
+fviz_silhouette(fit.kmeans)
+#the average silhouette width is 0.18, which is closer to 0 and suggest overlapping 
+#clusters or points that aren't well-separated.
+
+
+```
+
+
+Optimal number of groups? We can get some hints from silhouette, wss, and GAP
+
+
+1. Elbow method
+```{r}
+#With WSS we look for the elbow point.
+fviz_nbclust(scale(X), kmeans, method = 'wss', k.max = 10, nstart = 1000)+ 
+  labs(subtitle = "Elbow Method") 
+#From the graph, we can see the elbow points at the k-value (where the elbow is number of clusters).
+
+```
+
+2. With silhouette
+
+```{r}
+#we want the silhouette coefficient to be as large as possible.
+fviz_nbclust(scale(X), kmeans, method = "silhouette", k.max = 10, nstart = 1000) # 2 clusters 
+
+```
+
+3. GAP statistics 
+The gap statistic helps find the best number of clusters by comparing how tightly 
+data points are grouped in your actual clustering versus random data. The optimal 
+k is the value where your clustering is much better than what would be expected by 
+chance, usually at the point where the gap statistic is highest or levels off
+
+
+
+```{r}
+fviz_nbclust(scale(X), kmeans, method = 'gap_stat', k.max = 10, nstart = 10, nboot = 100) 
+#vertical line suggest the number of clusters, in this case 3 
+
+```
+
+Partitioning Around Medoids (PAM) is a clustering method similar to k-means, 
+but instead of using means, each cluster is represented by an actual data point 
+(the medoid). The algorithm assigns points to their nearest medoid, then iteratively 
+swaps medoids with other points if it reduces overall distance, until the best set of 
+medoids and clusters is found. PAM is more robust to outliers than k-means because it 
+uses real observations as centers.
+
+
+Number of groups for pam:
+
+1.Whit silhouette coefficient:
+
+
+```{r}
+fviz_nbclust(scale(X), pam, method="silhouette", k.max=10)
+
+```
+
+
+
+2.With gap statistics:
+
+
+```{r}
+fviz_nbclust(scale(X), pam, method="gap_stat", k.max=10)
+
+```
+
+
+
+With Within sum of squares:
+
+```{r}
+fviz_nbclust(scale(X), pam, method="wss", k.max=10)
+
+```
+
+
+3 is the number of clusters resulting of the three methods
+
+```{r}
+fit.pam = eclust(X, FUNcluster="pam", stand = TRUE, k=3,
+                 graph = F, nstart=1000)
+fviz_cluster(fit.pam, geom="point", main="Clusters with PAM", ellipse.type = "norm", 
+             star.plot=T) + geom_text(label=names, check_overlap = T)
+
+```
+
+
+Let's check the similiarty between the two groupings with the adjusted Rand index. 
+The closer to 1 the more agreement.A high similarity suggests that the clustering 
+structure of the data is stable and doesn't depend heavily on the algorithm used.
+
+```{r}
+adjustedRandIndex(fit.kmeans$cluster, fit.pam$clustering)
+
+```
+
+An adjusted Rand index of 0.58 indicates a moderate to substantial agreement 
+between the groupings produced by k-means and PAM algorithms. This result suggests 
+that while both methods detect similar underlying cluster structures, there are 
+meaningful differences in how some individuals are assigned to clusters. 
+
+Visualize the distribution of the clusters considering the BMI
+
+
+```{r}
+X_vis <- as.data.frame(X) %>%
+  mutate(cluster = factor(fit.pam$clustering))
+
+ggplot(X_vis, aes(x = cluster, y = BMI)) + 
+  geom_boxplot(fill = "yellow") + 
+  labs(title = "BMI by cluster", x = "Cluster", y = "BMI")
+```
+
+
+
+The boxplot shows that cluster 2 includes individuals with significantly lower 
+BMI, while clusters 1 and 3 have higher BMI distributions. This suggests cluster 
+2 is the lower-risk group in terms of body mass, while the other clusters may 
+represent higher metabolic risk.
+
+
+
+KERNEL KMEANS 
+Try to capture clusters that are not linearly separable in the input space.
+Apply a function to transform the data to a higher dimension space where it may become linearly separable.
+
+```{r}
+#Let's try with the number of centers suggested by number of groups for pam: 
+fit.ker = kkmeans(as.matrix(scale(X)), centers = 3, kernel = "rbfdot")  
+
+#ways for accessing the information:
+#1. Get the centers 
+centers(fit.ker) 
+
+#2. Get the within sum of squares 
+withinss(fit.ker) 
+
+#3. Get the size of the groups 
+size(fit.ker) 
+
+#4.oriented programming.
+object.ker = list(data=X, cluster=fit.ker@.Data) 
+fviz_cluster(object.ker, geom="point", ellipse=T) + 
+  geom_text(aes(label=names), check_overlap = T, hjust=0, vjust=0) 
+
+#Now with scaled data: 
+fit.ker.scaled = kkmeans(scale(X), centers=3) 
+object.ker.scaled = list(data=X, cluster=fit.ker.scaled@.Data) 
+fviz_cluster(object.ker.scaled, geom="point", ellipse=T) + 
+  geom_text(aes(label=names), check_overlap = T, hjust=0, vjust=0) 
+#We can try with different number of centers
+
+```
+
+
+Hierarchical clustering
+Hierarchical clustering is a method that groups data points step-by-step to form 
+clusters. There are two main types:
+1. Agglomerative (bottom-up), starting with each point as its own cluster and 
+repeatedly merging the closest pairs. The distance between clusters can be 
+measured by different linkage methods, such as single (minimum distance), 
+complete (maximum distance), average linkage (average distance), or Ward's 
+method (minimizing variance increase).
+
+2.Divisive (top-down), starting with all data in one cluster and splitting the 
+least cohesive clusters iteratively until each observation forms its own cluster.
+A key advantage of hierarchical clustering is that it does not require pre-specifying 
+the number of clusters in advance.
+
+
+
+```{r}
+distances = dist(scale(X), method="euclidean")
+hc = hclust(distances, method="ward.D2")
+plot(hc)
+```
+
+
+Ward's method is a hierarchical clustering algorithm that merges clusters step-by-step 
+by choosing the pair whose union causes the smallest increase in total within-cluster 
+variance. The goal is to create clusters that minimize the spread of points within them, 
+leading to more compact and distinct groups in the data.
+
+1. visualice with dendrogram
+
+```{r}
+hc$labels = names
+fviz_dend(x = hc,
+          k = 5, 
+          rect = T,
+          rect_fill = T,
+          palette = "jco",
+          rect_border = "jco")
+```
+
+Five clusters are not optimal because the dendrogram shows that some clusters 
+are formed by cutting branches at much lower heights, resulting in groups that 
+are not well separated and may be artificially divided. This leads to smaller, 
+less meaningful clusters and suggests that the dataset's natural structure is 
+better captured with fewer, more distinct groups
+
+```{r}
+#with a different number of clusters
+fviz_dend(x = hc,
+          k = 3, 
+          rect = T,
+          rect_fill = T,
+          palette = "jco",
+          rect_border = "jco")
+
+
+```
+
+2. visualise with a phylogenic tree
+
+```{r}
+fviz_dend(x = hc,
+          k = 5, 
+          type = "phylogenic",
+          repel = T,
+          cex = 0.8) +
+  labs(title="Hierarchical Clustering Tree") + 
+  theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank())
+
+#with a different number of clusters
+fviz_dend(x = hc,
+          k = 3, 
+          type = "phylogenic",
+          repel = T,
+          cex = 0.8) +
+  labs(title="Hierarchical Clustering Tree") + 
+  theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank())
+
+
+```
+
+
+
+EM clustering
+Expectation-Maximization (EM) clustering is an iterative probabilistic method 
+that fits data as a mixture of Gaussian distributions, each representing a cluster. 
+It estimates the parameters to maximize the likelihood of the data, assigning 
+probabilities for points belonging to each cluster. In R, the Mclust function 
+implements EM clustering with automatic model selection.
+```{r}
+res.Mclust = Mclust(scale(X))
+summary(res.Mclust)
+
+
+#We can access to the probability for each observation to be in each cluster:
+  
+head(res.Mclust$z)
+
+#The assigned cluster will be the one with the highest probability:
+head(res.Mclust$classification)
+```
+
+Mclust selects the best clustering model by minimizing the Bayesian Information Criterion (BIC), 
+balancing fit quality and model complexity. BIC=−2log(L)+mlog(n)
+
+```{r}
+fviz_mclust(res.Mclust, what="BIC")
+
+#Changing the argument `what` we can have the plot of the clusters (cusplot).
+fviz_mclust(res.Mclust, what="classification")
+
+
+
+#How similar is this clustering to the PAM?
+adjustedRandIndex(res.Mclust$classification, fit.pam$clustering)
+#0.146919
+
+#And to the hierarchical?
+adjustedRandIndex(res.Mclust$classification, groups)
+#0.2164466
+
+```
+
+final number of clusters
+
+```{r}
+k = 3
+fit = kmeans(scale(X), k, nstart=1000) 
+groups = fit$cluster
+barplot(table(groups), col="darkblue")
+#similar size
+
+#Interpretation of centers:
+centers=fit$centers
+tidy = cbind(
+  gather(as.data.frame(t(centers)), "cluster", "coor"),
+  var=rep(colnames(centers, k)),
+  size=rep(table(fit$cluster), each=ncol(centers))
+)
+
+
+tidy %>%
+  ggplot(aes(x=cluster, y=coor, fill=cluster)) +
+  geom_col() +
+  facet_wrap(~var) +
+  geom_text(aes(label=size),
+            position=position_stack(1.2))
+
+centers=fit$centers
+tidy = cbind(
+  gather(as.data.frame(t(centers)), "cluster", "coor"),
+  var=rep(colnames(centers, k)),
+  size=rep(table(fit$cluster), each=ncol(centers))
+)
+
+tidy %>%
+  ggplot(aes(x=var, y=coor, fill=var)) +
+  geom_col() +
+  facet_wrap(~cluster) +
+  theme(axis.text.x = element_text(angle=45))
+
+#clusplot
+#We can take a look to the groups using the `fviz_cluster` function. 
+#This function uses PCA to project the data in a 2D space for plotting.
+# Use fviz_cluster to visualize the groups
+
+names = rownames(X) 
+fviz_cluster(fit, data=X, geom=c("point"), 
+             ellipse.type = "norm") + 
+  theme_minimal() + geom_text(label=names)
+
+
+fviz_cluster(fit, data = X, geom = "point", ellipse.type = "norm", 
+             show.clust.cent = TRUE, #Show only the cluster centers 
+             repel = TRUE,           #Repel text labels to see better the plot 
+             pointsize = 1,           
+             alpha = 0.5) +           
+  theme_minimal() + 
+  labs(title = "Improved Cluster Plot") + 
+  theme(legend.position = "bottom") 
+
+```
+
+
+viasulize the number of patients affected with diabetes for each cluster
+
+```{r}
+clean_data$Cluster <- as.factor(groups) # groups = fit$cluster
+
+# Summarize diabetes rate by cluster
+diabetes_by_cluster <- clean_data %>%
+  group_by(Cluster) %>%
+  summarize(
+    Total = n(),
+    Diabetes = sum(Outcome == "Yes"),
+    Diabetes_Percent = round(100 * mean(Outcome == "Yes"), 1)
+  )
+
+print(diabetes_by_cluster)
+
+#plot the percentages
+library(ggplot2)
+ggplot(diabetes_by_cluster, aes(x = Cluster, y = Diabetes_Percent, fill = Cluster)) +
+  geom_col(show.legend = FALSE) +
+  ylim(0, 100) +
+  labs(title = "Diabetes Prevalence by Cluster", x = "Cluster", y = "% Diabetes (Yes)") +
+  theme_minimal()
+
+```
+
+
+
+
+
+
