@@ -3,7 +3,7 @@
 An academic statistical learning project examining relationships between clinical measurements and diabetes outcomes using **R**. The study combines data preprocessing, supervised modeling, dimensionality reduction, and unsupervised clustering to explore diabetes-related risk patterns.
 
 **Authors:** Elena Lardies and Daniela Bialy  
-**Project type:** University coursework - Bachelor in Data Science and Engineering. Universidad Carlos III de Madrid.
+**Project type:** University coursework. Bachelor in Data Science and Engineering. Universidad Carlos III de Madrid.
 
 ## Dataset
 
